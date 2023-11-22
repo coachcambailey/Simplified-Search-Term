@@ -1,0 +1,70 @@
+// User Configuration
+let SHEET_URL = 'https://docs.google.com/spreadsheets/d/1ywENn3ta1VPUHsHuoi2EwwZkk7cl7-xwMG69stvzpaE/edit#gid=1092341016';
+let SHEET_NAME = 'r_search_term';
+let numDays = 60; 
+let numTerms = 10; 
+
+// Don't change the code below this line.
+
+function main() {
+  let ss = SpreadsheetApp.openByUrl(SHEET_URL);
+  let sheet = ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);
+
+  let timeZone = AdsApp.currentAccount().getTimeZone();
+  let today = new Date();
+  let startDate = new Date();
+  startDate.setDate(today.getDate() - numDays);
+  let formattedStart = Utilities.formatDate(startDate, timeZone, 'yyyyMMdd');
+  let formattedToday = Utilities.formatDate(today, timeZone, 'yyyyMMdd');
+
+  sheet.clear();
+  sheet.appendRow(['Campaign Name', 'Search Term', 'Impressions', 'Clicks', 'CTR', 'CPC', 'Cost']);
+
+  let query = `
+    SELECT 
+      campaign.name,
+      search_term_view.search_term, 
+      metrics.impressions,
+      metrics.clicks,
+      metrics.cost_micros
+    FROM 
+      search_term_view 
+    WHERE 
+      segments.date BETWEEN '${formattedStart}' AND '${formattedToday}'
+      AND campaign.status != 'REMOVED'
+      AND campaign.advertising_channel_type = 'SEARCH'
+    ORDER BY 
+      campaign.name, metrics.impressions DESC
+  `;
+
+  let report = AdsApp.report(query);
+  let rows = report.rows();
+
+  let campaignData = {};
+  while (rows.hasNext()) {
+    let row = rows.next();
+    let campaignName = row['campaign.name'];
+    let searchTerm = row['search_term_view.search_term'];
+    let impressions = row['metrics.impressions'];
+    let clicks = row['metrics.clicks'];
+    let costMicros = row['metrics.cost_micros'];
+
+    let ctr = clicks / impressions * 100;
+    let cpc = impressions > 0 ? (costMicros / 1000000) / clicks : 0;
+    let cost = costMicros / 1000000;  // Convert cost from micros to currency
+
+    if (!campaignData[campaignName]) {
+      campaignData[campaignName] = [];
+    }
+
+    if (campaignData[campaignName].length < numTerms) {
+      campaignData[campaignName].push([campaignName, searchTerm, impressions, clicks, ctr.toFixed(2) + '%', '$' + cpc.toFixed(2), '$' + cost.toFixed(2)]);
+    }
+  }
+
+  for (let campaign in campaignData) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, campaignData[campaign].length, 7).setValues(campaignData[campaign]);
+  }
+}
+
+main();
