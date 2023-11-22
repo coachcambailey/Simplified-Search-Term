@@ -1,0 +1,101 @@
+// User Configuration
+let SHEET_URL = 'https://docs.google.com/spreadsheets/d/1ywENn3ta1VPUHsHuoi2EwwZkk7cl7-xwMG69stvzpaE/edit#gid=1092341016';
+let SHEET_NAME = 'r_search_term';
+let numDays = 30; 
+let numTerms = 5;
+
+function main() {
+  let ss = SpreadsheetApp.openByUrl(SHEET_URL);
+  let sheet = ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);
+  
+  sheet.clear();
+  sheet.appendRow([
+    'Account ID', 'Account Name', 'Campaign Name', 'Search Term', 'Impressions', 'Impressions (prev)', 
+    'Clicks', 'Clicks (prev)', 'CTR', 'CTR (prev)', 'CPC', 'CPC (prev)', 'Cost', 'Cost (prev)'
+  ]);
+
+  let accounts = MccApp.accounts().get();
+  while (accounts.hasNext()) {
+    let account = accounts.next();
+    MccApp.select(account);
+
+    let timeZone = AdsApp.currentAccount().getTimeZone();
+    let accountId = AdsApp.currentAccount().getCustomerId();
+    let accountName = AdsApp.currentAccount().getName();
+
+    let currentData = fetchReportData(timeZone, numDays, 0);
+    let prevData = fetchReportData(timeZone, numDays * 2, numDays);
+
+    for (let campaignName in currentData) {
+      for (let searchTerm in currentData[campaignName]) {
+        let current = currentData[campaignName][searchTerm];
+        let previous = prevData[campaignName] && prevData[campaignName][searchTerm] ? prevData[campaignName][searchTerm] : {impressions: 0, clicks: 0, cost: 0};
+      
+        let currentCTR = current.clicks / current.impressions * 100;
+        let previousCTR = previous.clicks / previous.impressions * 100;
+        let currentCPC = current.clicks > 0 ? current.cost / current.clicks : 0;
+        let previousCPC = previous.clicks > 0 ? previous.cost / previous.clicks : 0;
+      
+        sheet.appendRow([
+          accountId, accountName, campaignName, searchTerm, 
+          current.impressions, previous.impressions, 
+          current.clicks, previous.clicks, 
+          currentCTR.toFixed(2) + '%', previousCTR.toFixed(2) + '%', 
+          '$' + currentCPC.toFixed(2), '$' + previousCPC.toFixed(2), 
+          '$' + current.cost.toFixed(2), '$' + previous.cost.toFixed(2)
+        ]);
+      }
+    }
+  }
+}
+
+function fetchReportData(timeZone, startDateOffset, endDateOffset) {
+  let startDate = new Date();
+  let endDate = new Date();
+  startDate.setDate(startDate.getDate() - startDateOffset);
+  endDate.setDate(startDate.getDate() + endDateOffset);
+  let formattedStart = Utilities.formatDate(startDate, timeZone, 'yyyyMMdd');
+  let formattedEnd = Utilities.formatDate(endDate, timeZone, 'yyyyMMdd');
+  
+  let query = `
+    SELECT 
+      campaign.name,
+      search_term_view.search_term, 
+      metrics.impressions,
+      metrics.clicks,
+      metrics.cost_micros
+    FROM 
+      search_term_view 
+    WHERE 
+      segments.date BETWEEN '${formattedStart}' AND '${formattedEnd}'
+      AND campaign.status != 'REMOVED'
+      AND campaign.advertising_channel_type = 'SEARCH'
+    ORDER BY 
+      campaign.name, metrics.impressions DESC
+  `;
+  
+  let report = AdsApp.report(query);
+  let rows = report.rows();
+  let data = {};
+  while (rows.hasNext()) {
+    let row = rows.next();
+    let campaignName = row['campaign.name'];
+    let searchTerm = row['search_term_view.search_term'];
+    if (!data[campaignName]) {
+      data[campaignName] = {};
+    }
+    if (!data[campaignName][searchTerm]) {
+      let termCount = Object.keys(data[campaignName]).length;
+      if (termCount >= numTerms) continue; // Skip if numTerms reached for this campaign
+      data[campaignName][searchTerm] = {
+        impressions: 0,
+        clicks: 0,
+        cost: 0
+      };
+    }
+    data[campaignName][searchTerm].impressions += parseInt(row['metrics.impressions'], 10);
+    data[campaignName][searchTerm].clicks += parseInt(row['metrics.clicks'], 10);
+    data[campaignName][searchTerm].cost += parseInt(row['metrics.cost_micros'], 10) / 1000000;
+  }
+  return data;
+}
